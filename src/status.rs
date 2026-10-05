@@ -1,4 +1,4 @@
-use crate::state::{state_file_path, SyncState};
+use crate::state::{state_db_path, SyncState};
 use std::process::Command;
 
 /// Show current daemon status
@@ -8,8 +8,8 @@ pub fn show_status() -> anyhow::Result<()> {
     let service_active = check_systemd_service();
     print_service_status(&service_active);
 
-    let state_path = state_file_path();
-    let state = SyncState::load(&state_path)?;
+    let state_path = state_db_path();
+    let state = SyncState::open(&state_path)?;
     print_sync_state(&state);
 
     Ok(())
@@ -48,12 +48,13 @@ fn print_service_status(status: &ServiceStatus) {
 fn print_sync_state(state: &SyncState) {
     println!("--- Sync State ---");
 
-    match state.last_sync {
+    match state.last_sync() {
         Some(ts) => println!("Last sync: {}", ts.format("%Y-%m-%d %H:%M:%S")),
         None => println!("Sync has not been performed yet"),
     }
 
-    if state.recent_files.is_empty() {
+    let records = state.recent_records(20);
+    if records.is_empty() {
         println!("\nNo sync records.");
         return;
     }
@@ -62,7 +63,7 @@ fn print_sync_state(state: &SyncState) {
     println!("{:<40} {:<15} {}", "File", "Direction", "Time");
     println!("{}", "-".repeat(70));
 
-    for record in state.recent_files.iter().rev().take(20) {
+    for record in records.iter() {
         let direction = match record.direction {
             crate::state::SyncDirection::Upload => "Upload",
             crate::state::SyncDirection::Download => "Download",

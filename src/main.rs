@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 use webdav_sync::config::Config;
 use webdav_sync::setup;
-use webdav_sync::state::{state_file_path, SyncState};
+use webdav_sync::state::state_db_path;
 use webdav_sync::status;
 use webdav_sync::sync::{perform_full_sync, Syncer};
 use webdav_sync::webdav::WebDavClient;
@@ -71,15 +71,11 @@ async fn main() -> anyhow::Result<()> {
         config.webdav_url
     );
 
-    let state_path = state_file_path();
-    let mut state = SyncState::load(&state_path)?;
+    let state_path = state_db_path();
 
     if cli.once {
         let client = WebDavClient::new(&config)?;
-        let result = perform_full_sync(&config, &client).await?;
-
-        update_state(&mut state, &result);
-        state.save(&state_path)?;
+        let result = perform_full_sync(&config, &client, &state_path).await?;
 
         tracing::info!(
             "Sync completed: uploaded {}, downloaded {}, conflicts {}, errors {}",
@@ -94,8 +90,4 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-fn update_state(_state: &mut SyncState, result: &webdav_sync::sync::SyncResult) {
-    let _ = result;
 }

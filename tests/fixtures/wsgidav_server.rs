@@ -80,11 +80,6 @@ impl TestWebDavServer {
     pub fn remote_file_exists(&self, rel_path: &str) -> bool {
         self.root.join(rel_path).exists()
     }
-
-    /// Read file content from server
-    pub fn read_remote_file(&self, rel_path: &str) -> Option<Vec<u8>> {
-        std::fs::read(self.root.join(rel_path)).ok()
-    }
 }
 
 impl Drop for TestWebDavServer {

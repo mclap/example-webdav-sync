@@ -4,9 +4,10 @@ use walkdir::WalkDir;
 use crate::config::Config;
 use crate::metadata::{local_metadata, FileMetadata};
 
-/// Scan local directory
+/// Scan local directory for files and empty directories
 pub fn scan_local(dir: &Path, config: &Config) -> anyhow::Result<Vec<FileMetadata>> {
     let mut files = Vec::new();
+    let mut all_dirs: Vec<(PathBuf, String)> = Vec::new();
 
     for entry in WalkDir::new(dir)
         .follow_links(false)
@@ -14,14 +15,15 @@ pub fn scan_local(dir: &Path, config: &Config) -> anyhow::Result<Vec<FileMetadat
         .filter_entry(|e| !is_excluded(&e.path().to_string_lossy(), &config.exclude))
     {
         let entry = entry?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
         let path = entry.path();
         let rel_path = path.strip_prefix(dir)?.to_string_lossy().replace('\\', "/");
 
         if is_excluded(&rel_path, &config.exclude) {
+            continue;
+        }
+
+        if entry.file_type().is_dir() {
+            all_dirs.push((path.to_path_buf(), rel_path));
             continue;
         }
 
@@ -33,7 +35,45 @@ pub fn scan_local(dir: &Path, config: &Config) -> anyhow::Result<Vec<FileMetadat
         }
     }
 
+    // Find empty directories (no files inside)
+    for (dir_path, rel_path) in all_dirs {
+        if is_empty_dir(&dir_path) {
+            match local_metadata(&dir_path, &rel_path) {
+                Ok(meta) => files.push(meta),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to get metadata for dir {}: {}",
+                        dir_path.display(),
+                        e
+                    );
+                }
+            }
+        }
+    }
+
     Ok(files)
+}
+
+/// Check if directory is empty (no files inside, recursively)
+fn is_empty_dir(path: &Path) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+    match std::fs::read_dir(path) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if entry_path.is_file() {
+                    return false;
+                }
+                if entry_path.is_dir() && !is_empty_dir(&entry_path) {
+                    return false;
+                }
+            }
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// Check if path matches exclusion patterns
@@ -122,6 +162,12 @@ pub fn remove_file(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Remove empty directory
+pub fn remove_dir(path: &Path) -> anyhow::Result<()> {
+    std::fs::remove_dir(path)?;
+    Ok(())
+}
+
 /// Atomic file write
 pub fn write_file_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
@@ -206,5 +252,20 @@ mod tests {
         assert!(glob_match("**", "a/b/c"));
         assert!(glob_match("", ""));
         assert!(!glob_match("", "something"));
+    }
+
+    #[test]
+    fn test_is_empty_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let empty_dir = temp.path().join("empty");
+        std::fs::create_dir(&empty_dir).unwrap();
+        assert!(is_empty_dir(&empty_dir));
+
+        let non_empty_dir = temp.path().join("non_empty");
+        std::fs::create_dir(&non_empty_dir).unwrap();
+        std::fs::write(non_empty_dir.join("file.txt"), "content").unwrap();
+        assert!(!is_empty_dir(&non_empty_dir));
+
+        assert!(!is_empty_dir(temp.path()));
     }
 }

@@ -93,7 +93,7 @@ impl WebDavClient {
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("All retries exhausted")))
     }
 
-    /// List files recursively via PROPFIND
+    /// List files and directories recursively via PROPFIND
     pub async fn list_files(&self) -> anyhow::Result<Vec<FileMetadata>> {
         let resp = self
             .request(Method::from_bytes(b"PROPFIND").unwrap(), "")
@@ -231,6 +231,7 @@ fn parse_propfind_response(xml: &str, base_url: &Url) -> anyhow::Result<Vec<File
     let mut current_size: Option<u64> = None;
     let mut current_modified: Option<DateTime<Utc>> = None;
     let mut current_etag: Option<String> = None;
+    let mut current_is_dir = false;
     let mut in_href = false;
     let mut in_getcontentlength = false;
     let mut in_getlastmodified = false;
@@ -256,33 +257,44 @@ fn parse_propfind_response(xml: &str, base_url: &Url) -> anyhow::Result<Vec<File
                 match local_name {
                     "response" => {
                         if let Some(href) = current_href.take() {
-                            if let (Some(size), Some(modified)) =
-                                (current_size.take(), current_modified.take())
+                            if let Ok(decoded) =
+                                percent_encoding::percent_decode_str(&href).decode_utf8()
                             {
-                                if let Ok(decoded) =
-                                    percent_encoding::percent_decode_str(&href).decode_utf8()
+                                let path = decoded.as_ref();
                                 {
-                                    let path = decoded.as_ref();
                                     if let Ok(rel) = strip_base(path, base_url) {
-                                        if !rel.is_empty() && !rel.ends_with('/') {
+                                        let is_dir = rel.ends_with('/') || current_is_dir;
+                                        let clean_rel = rel.trim_end_matches('/').to_string();
+                                        if !clean_rel.is_empty() {
                                             files.push(FileMetadata {
-                                                rel_path: rel.to_string(),
-                                                size,
-                                                modified,
+                                                rel_path: clean_rel,
+                                                size: current_size.take().unwrap_or(0),
+                                                modified: current_modified
+                                                    .take()
+                                                    .unwrap_or_else(|| Utc::now()),
                                                 etag: current_etag.take(),
                                                 content_hash: None,
+                                                is_dir,
                                             });
                                         }
                                     }
                                 }
                             }
                         }
+                        current_is_dir = false;
                     }
                     "href" => in_href = false,
                     "getcontentlength" => in_getcontentlength = false,
                     "getlastmodified" => in_getlastmodified = false,
                     "getetag" => in_getetag = false,
                     _ => {}
+                }
+            }
+            Ok(Event::Empty(e)) => {
+                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let local_name = name.split(':').next_back().unwrap_or(&name);
+                if local_name == "collection" {
+                    current_is_dir = true;
                 }
             }
             Ok(Event::Text(e)) => {
@@ -381,6 +393,7 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].rel_path, "file1.txt");
         assert_eq!(files[0].size, 1024);
+        assert!(!files[0].is_dir);
         assert_eq!(files[0].etag.as_deref(), Some("\"abc123\""));
         assert_eq!(files[1].rel_path, "file2.txt");
         assert_eq!(files[1].size, 2048);
@@ -394,6 +407,7 @@ mod tests {
     <D:href>/dav/sync/</D:href>
     <D:propstat>
       <D:prop>
+        <D:resourcetype><D:collection/></D:resourcetype>
         <D:getcontentlength>0</D:getcontentlength>
         <D:getlastmodified>Tue, 15 Nov 1994 08:12:31 GMT</D:getlastmodified>
       </D:prop>
@@ -404,6 +418,7 @@ mod tests {
     <D:href>/dav/sync/subdir/</D:href>
     <D:propstat>
       <D:prop>
+        <D:resourcetype><D:collection/></D:resourcetype>
         <D:getcontentlength>0</D:getcontentlength>
         <D:getlastmodified>Tue, 15 Nov 1994 08:12:31 GMT</D:getlastmodified>
       </D:prop>
@@ -414,6 +429,7 @@ mod tests {
     <D:href>/dav/sync/subdir/file.txt</D:href>
     <D:propstat>
       <D:prop>
+        <D:resourcetype/>
         <D:getcontentlength>500</D:getcontentlength>
         <D:getlastmodified>Tue, 15 Nov 1994 08:12:31 GMT</D:getlastmodified>
       </D:prop>
@@ -425,9 +441,12 @@ mod tests {
         let base_url = Url::parse("https://example.com/dav/sync/").unwrap();
         let files = parse_propfind_response(xml, &base_url).unwrap();
 
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].rel_path, "subdir/file.txt");
-        assert_eq!(files[0].size, 500);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].rel_path, "subdir");
+        assert!(files[0].is_dir);
+        assert_eq!(files[1].rel_path, "subdir/file.txt");
+        assert!(!files[1].is_dir);
+        assert_eq!(files[1].size, 500);
     }
 
     #[test]
