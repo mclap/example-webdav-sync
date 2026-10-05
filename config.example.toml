@@ -1,0 +1,32 @@
+# WebDAV Sync configuration example
+
+# Local directory to sync
+local_dir = "/path/to/local/directory"
+
+# WebDAV server URL (must end with /)
+webdav_url = "https://example.com/dav/sync/"
+
+# Credentials
+username = "your_username"
+password = "your_password"
+
+# Full sync interval in seconds
+sync_interval_secs = 60
+
+# HTTP request timeout in seconds
+timeout_secs = 30
+
+# Number of retry attempts on errors
+max_retries = 3
+
+# Exclusions (glob patterns relative to root)
+exclude = [
+    ".git",
+    ".webdav-sync-state.toml",
+    "*.tmp",
+    "*.swp",
+    ".DS_Store",
+]
+
+# Verbose logging
+verbose = false
